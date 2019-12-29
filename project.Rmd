@@ -1,0 +1,309 @@
+---
+title: "Weight Lifting Exercise Prediction"
+author: "Reema Singla"
+date: "29 Dec 2019"
+output: 
+  html_document:
+    keep_md: yes
+  md_document:
+    variant: markdown_github
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE, fig.width=10, fig.height=5)
+options(width=120)
+library(lattice)
+library(ggplot2)
+library(plyr)
+library(randomForest)
+```
+
+## Executive Summary
+
+Based on a dataset provide by HAR [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) we will try to train a predictive model to predict what exercise was performed using a dataset with 159 features
+
+
+
+We'll take the following steps:
+
+- Process the data, for use of this project
+- Explore the data, especially focussing on the two paramaters we are interested in 
+- Model selection, where we try different models to help us answer our questions
+- Model examination, to see wether our best model holds up to our standards
+- A Conclusion where we answer the questions based on the data
+- Predicting the classification of the model on test set
+
+## Processing
+
+First change 'am' to  factor (0 = automatic, 1 = manual)
+And make cylinders a factor as well (since it is not continious)
+
+```{r}
+training_data = read.csv("pml-training.csv")
+testing_data = read.csv("pml-testing.csv")
+```
+
+## Exploratory data analyses 
+
+Look at the dimensions & head of the dataset to get an idea
+```{r}
+# Res 1
+dim(training_data)
+# Res 2 - excluded because excessivness
+# head(training_data)
+# Res 3 - excluded because excessivness
+#str(training_data)
+# Res 4 - excluded because excessivness
+#summary(training_data)
+```
+
+
+What we see is a lot of data with NA / empty values. Let's remove those
+
+```{r}
+maxNAallowed = ceiling(nrow(training_data)/100 * 20)
+removeColumns = which(colSums(is.na(training_data)| training_data=="")>maxNAallowed)
+training_data_clean = training_data[,-removeColumns]
+testing_data_clean = testing_data[,-removeColumns]
+```
+
+Also remove all time related data, since we won't use those
+
+```{r}
+remove_time = grep("timestamp",names(training_data_clean))
+training_without_time = training_data_clean[,-c(1,remove_time)]
+testing_without_time = testing_data_clean[,-c(1,remove_time)]```
+
+Then convert target factor variable("classe") into integer
+```{r}
+training_clas_int <- data.frame(data.matrix(training_without_time))
+testing_clas_int <- data.frame(data.matrix(testing_without_time))
+```
+
+Final dataset 
+```{r}
+train_data = training_clas_int
+testing_data = testing_clas_int
+```
+
+
+## Exploratory data analyses 
+
+Since the test set provided is the the ultimate validation set, we will split the current training in a test and train set to work with.
+
+```{r}
+set.seed(18765277)
+library(caret)
+classeIndex <- which(names(train_data) == "classe")
+partition <- createDataPartition(y=train_data$classe, p=0.75, list=FALSE)
+train_sub_Train <- train_data[partition, ]
+train_sub_Test <- train_data[-partition, ]
+```
+
+correlation with target variable "classe"
+```{r}
+correlations <- cor(train_sub_Train[, -classeIndex], train_sub_Train$classe)
+bestCorrelations <- subset(as.data.frame(as.table(correlations)), abs(Freq)>0.29)
+bestCorrelations
+```
+
+Even the best correlations with classe are hardly above 0.3
+Let's plot the correlation with target variable
+
+```{r}
+library(Rmisc)
+library(ggplot2)
+p1 <- ggplot(train_sub_Train, aes(x=classe,y=pitch_forearm, fill=factor(classe))) + 
+  geom_boxplot(stat = 'boxplot', aes(group=classe))
+p2 <- ggplot(train_sub_Train, aes(classe, magnet_arm_x, fill=factor(classe))) + 
+  geom_boxplot(stat = 'boxplot', aes(group=classe))
+p3 <- ggplot(train_sub_Train, aes(classe, magnet_belt_y, fill=factor(classe))) + 
+  geom_boxplot(stat = 'boxplot', aes(group=classe))
+multiplot(p1,p2,p3)
+```
+
+Clearly there is no hard seperation of classes possible using only these 'highly' correlated features.
+Let's train some models to get closer to a way of predicting these classe's
+
+## Bi-variate analysis  
+
+Let's identify variables with high correlations amongst each other in our set, so we can possibly exclude them from the pca or training. 
+
+We will check afterwards if these modifications to the dataset make the model more accurate (and perhaps even faster)
+
+```{r}
+correlationMatrix <- cor(train_sub_Train[, -classeIndex])
+highlyCorrelated <- findCorrelation(correlationMatrix, cutoff=0.9, exact=TRUE)
+excludeColumns <- c(highlyCorrelated, classeIndex)
+library(corrplot)
+corrplot(correlationMatrix, method="color", type="lower", order="hclust", tl.cex=0.70, tl.col="black", tl.srt = 45, diag = FALSE)
+```
+
+We see that there are some features that aree quite correlated with each other.
+We will have a model with these excluded. Also we'll try and reduce the features by running PCA on all and the excluded subset of the features
+
+## PCA for dimension reduction
+```{r}
+library(FactoMineR)
+library(factoextra)
+
+PCA_for_train=PCA(train_sub_Train[,-classeIndex],scale.unit = T,  graph = T)
+PCA_for_train$eig
+fviz_eig(PCA_for_train)
+var=get_pca_var(PCA_for_train)
+```
+Using PCA and correlations among suggested variables(by PCA) choose the best suited variables
+```{r}
+fviz_pca_var(PCA_for_train, col.var = 'cos2', repel = T)
+corrplot(var$cos2,is.corr = F)
+corrplot(cor(train_sub_Train[,c(1,5,6,11,14)]))
+# pitch_belt for PC1 
+
+corrplot(cor(train_sub_Train[,c(4,7,12,13)]))
+# roll belt from PC2
+#magenet armY from PC3
+corrplot(cor(train_sub_Train[,c(34,35,36,48,49)]))
+#gyros_dumbell_x
+#yaw_dumbell from PCA Plot
+
+ProccesedDATInd=c(which(names(train_data) == "pitch_belt"),which(names(train_data) == "roll_belt"),
+     which(names(train_data) == "magnet_arm_y"),which(names(train_data) == "gyros_dumbbell_x"),
+     which(names(train_data) == "yaw_dumbbell"))
+train_PCA=train_sub_Train[,ProccesedDATInd]
+test_PCA=train_sub_Test[,ProccesedDATInd]
+```
+
+## Model selection
+
+Now we'll do some actual Random Forest training.
+We'll use 200 trees, because I've already seen that the error rate doesn't decline a lot after say 50 trees, but we still want to be thorough.
+Also we will time each of the 4 random forest models to see if when all else is equal one pops out as the faster one.
+
+```{r}
+#Random_Forest Model 1
+library(randomForest)
+ntree <- 200 
+start <- proc.time()
+rfMod.cleaned <- randomForest(
+  x=train_sub_Train[, -classeIndex], 
+  y=train_sub_Train$classe,
+  xtest=train_sub_Test[, -classeIndex], 
+  ytest=train_sub_Test$classe, 
+  ntree=ntree,
+  keep.forest=TRUE,
+  proximity=TRUE)
+proc.time() - start
+
+#Random_Forest Model 2
+start <- proc.time()
+rfMod.exclude <- randomForest(
+  x=train_sub_Train[, -excludeColumns], 
+  y=train_sub_Train$classe,
+  xtest=train_sub_Test[, -excludeColumns], 
+  ytest=train_sub_Test$classe, 
+  ntree=ntree,
+  keep.forest=TRUE,
+  proximity=TRUE)
+proc.time() - start
+
+#Random_Forest Model 3
+start <- proc.time()
+rfMod.pca.all <- randomForest(
+  x=train_PCA, 
+  y=train_sub_Train$classe,
+  xtest=test_PCA, 
+  ytest=train_sub_Test$classe, 
+  ntree=ntree,
+  keep.forest=TRUE,
+  proximity=TRUE) 
+proc.time() - start
+```
+
+## Model examination
+
+Now that we have 4 trained models, we will check the accuracies of each.
+(There probably is a better way, but this still works good)
+
+```{r}
+#Accuracy of Model 1
+rfMod.cleaned
+rfMod.cleaned.training.acc <- round(1-sum(rfMod.cleaned$confusion[, 'class.error']),3)
+paste0("Accuracy on training: ",rfMod.cleaned.training.acc)
+rfMod.cleaned.testing.acc <- round(1-sum(rfMod.cleaned$test$confusion[, 'class.error']),3)
+paste0("Accuracy on testing: ",rfMod.cleaned.testing.acc)
+```
+```{r}
+#Accuracy of Model 2
+rfMod.exclude
+rfMod.exclude.training.acc <- round(1-sum(rfMod.exclude$confusion[, 'class.error']),3)
+paste0("Accuracy on training: ",rfMod.exclude.training.acc)
+rfMod.exclude.testing.acc <- round(1-sum(rfMod.exclude$test$confusion[, 'class.error']),3)
+paste0("Accuracy on testing: ",rfMod.exclude.testing.acc)
+```
+```{r}
+#Accuracy of Model 3
+rfMod.pca.all
+rfMod.pca.all.training.acc <- round(1-sum(rfMod.pca.all$confusion[, 'class.error']),3)
+paste0("Accuracy on training: ",rfMod.pca.all.training.acc)
+rfMod.pca.all.testing.acc <- round(1-sum(rfMod.pca.all$test$confusion[, 'class.error']),3)
+paste0("Accuracy on testing: ",rfMod.pca.all.testing.acc)
+```
+
+## Conclusion
+
+This concludes that nor PCA doesn't have a positive of the accuracy (or the process time for that matter)
+The `rfMod.exclude` perform's slightly better then the 'rfMod.cleaned'
+
+We'll stick with the `rfMod.exclude` model as the best model to use for predicting the test set.
+Because with an accuracy of 98.7% and an estimated OOB error rate of 0.23% this is the best model.
+
+
+Before doing the final prediction we will examine the chosen model more in depth using some plots
+
+```{r}
+par(mfrow=c(1,2)) 
+varImpPlot(rfMod.exclude, cex=0.7, pch=16, main='Variable Importance Plot: rfMod.exclude')
+plot(rfMod.exclude, , cex=0.7, main='Error vs No. of trees plot')
+par(mfrow=c(1,1)) 
+```
+
+To really look in depth at the distances between predictions we can use MDSplot and cluster predictiosn and results
+
+```{r}
+start <- proc.time()
+library(RColorBrewer)
+classeLevels <- levels(training_data$classe)
+palette <- brewer.pal(length(classeLevels), "Set1")
+rfMod.mds <- MDSplot(rfMod.exclude, as.factor(classeLevels), k=2, pch=20, palette=palette)
+library(cluster)
+rfMod.pam <- pam(1 - rfMod.exclude$proximity, k=length(classeLevels), diss=TRUE)
+plot(
+  rfMod.mds$points[, 1], 
+  rfMod.mds$points[, 2], 
+  pch=rfMod.pam$clustering+14, 
+  col=alpha(palette[as.numeric(train_sub_Train$classe)],0.5), 
+  bg=alpha(palette[as.numeric(train_sub_Train$classe)],0.2), 
+  cex=0.5,
+  xlab="x", ylab="y")
+legend("bottomleft", legend=unique(rfMod.pam$clustering), pch=seq(15,14+length(classeLevels)), title = "PAM cluster")
+legend("topleft", legend=classeLevels, pch = 16, col=palette, title = "Classification")
+proc.time() - start
+```
+
+
+# Test results
+
+Although we've chosen the `rfMod.exclude` it's still nice to see what the other 3 models would predict on the final test set.
+Let's look at predictions for all models on the final test set. 
+
+```{r}
+predictions <- t(cbind(
+  exclude=as.data.frame(predict(rfMod.exclude, testing_data[, -excludeColumns]), optional=TRUE),
+  cleaned=as.data.frame(predict(rfMod.cleaned, testing_data), optional=TRUE),
+  pcaAll=as.data.frame(predict(rfMod.pca.all, test_PCA), optional=TRUE)
+))
+predictions
+```
+
+The predictions don't really change a lot with each model, but since we have most faith in the `rfMod.exclude`, we'll keep that as final answer. 
