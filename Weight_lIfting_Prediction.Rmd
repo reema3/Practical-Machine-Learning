@@ -1,0 +1,124 @@
+---
+title: "Weight_Exercise_prediction"
+author: "Reema Singla"
+date: "29/12/2019"
+output: 
+  html_document:
+    keep_md: yes
+  md_document:
+    variant: markdown_github
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning=FALSE, message=FALSE, fig.width=10, fig.height=5)
+options(width=120)
+library(caret)
+library(rpart)
+library(randomForest)
+library(nnet)
+```
+
+
+## Executive Summary
+
+Based on a dataset provide by HAR [http://groupware.les.inf.puc-rio.br/har](http://groupware.les.inf.puc-rio.br/har) we will try to train a predictive model to predict what exercise was performed using a dataset with 159 features
+
+
+
+We'll take the following steps:
+
+- Process the data, for use of this project
+- Explore the data, especially focussing on the two paramaters we are interested in 
+- Model selection, where we try different models to help us answer our questions
+- Model examination, to see wether our best model holds up to our standards
+- A Conclusion where we answer the questions based on the data
+- Predicting the classification of the model on test set
+
+## Processing
+
+```{r}
+set.seed(111)
+training_data = read.csv("pml-training.csv")
+testing_data = read.csv("pml-testing.csv")
+```
+
+## Exploratory data analyses 
+
+```{r}
+#Remove columns with more than 20% missing values
+maxNAallowed = ceiling(nrow(training_data)/100 * 20)
+removeColumns = which(colSums(is.na(training_data)| training_data=="")>maxNAallowed)
+training_data_clean = training_data[,-c(1:7,removeColumns)]
+testing_data_clean = testing_data[,-c(1:7,removeColumns)]
+
+#remove time related columns
+remove_time = grep("timestamp",names(training_data_clean))
+training_without_time = training_data_clean[,-c(1,remove_time)]
+testing_without_time = testing_data_clean[,-c(1,remove_time)]
+
+#final data
+train_data = training_without_time
+testing_data = testing_without_time
+```
+## Model selection
+```{r}
+#split train data into test and train
+partition <- createDataPartition(y=train_data$classe, p=0.8, list=FALSE)
+train_sub_Train <- train_data[partition, ]
+train_sub_Test <- train_data[-partition, ]
+
+#Decision Tree
+system.time(
+  modelDT <- rpart(classe ~ ., method = "class", data = train_sub_Train)
+)
+predictDT <- predict(modelDT, train_sub_Test, type = "class")
+cM <- confusionMatrix(predictDT, train_sub_Test$classe)
+cM
+round(cM$overall["Accuracy"][[1]], 4) * 100
+
+#Random Forest
+system.time(
+  modelRF <- randomForest(classe ~ ., data = train_sub_Train, ntree = 100)
+)
+plot(modelRF)
+predictRF <- predict(modelRF, train_sub_Test, type = "class")
+cM <- confusionMatrix(predictRF, train_sub_Test$classe)
+cM
+round(cM$overall["Accuracy"][[1]], 4) * 100
+
+#GBM
+system.time(
+  modelGBM <- train(classe ~ ., method = "gbm", data = train_sub_Train,
+                    trControl = trainControl(method = "repeatedcv", number = 5, repeats = 1))
+)
+predictGBM <- predict(modelGBM, train_sub_Test)
+cM <- confusionMatrix(predictGBM, train_sub_Test$classe)
+cM
+round(cM$overall["Accuracy"][[1]], 4) * 100
+
+#LDA
+system.time(
+  modelLDA <- train(classe ~ ., method = "lda", data = train_sub_Train,
+                    trControl = trainControl(method = "repeatedcv", number = 5, repeats = 1))
+)
+predictLDA <- predict(modelLDA, train_sub_Test)
+cM <- confusionMatrix(predictLDA, train_sub_Test$classe)
+cM
+round(cM$overall["Accuracy"][[1]], 4) * 100
+
+#Neural Networks
+system.time(
+  modelDL <- nnet(classe ~ ., train_sub_Train, size = 5, rang = .1, decay = 5e-4, maxit = 100,
+                  trControl = trainControl(method = "repeatedcv", number = 5, repeats = 1))
+)
+predictDL <- predict(modelDL, train_sub_Test, type = "class")
+cM <- confusionMatrix(as.factor(predictDL), train_sub_Test$classe)
+cM
+round(cM$overall["Accuracy"][[1]], 4) * 100
+```
+
+#using Random Forest because of best accuracy
+```{r}
+predict(modelRF, testing_data, type = "class")
+```
